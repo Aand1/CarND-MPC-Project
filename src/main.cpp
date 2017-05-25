@@ -31,7 +31,7 @@ string hasData(const string &s) {
 
 int main() {
   // MPC parameters.
-  int breadth = 10;
+  int breadth = 15;
   double dt = 0.1;
   double vr = 20.0;
 
@@ -84,7 +84,7 @@ int main() {
     json msgJson;
     double tt = j[1]["throttle"];
     msgJson["throttle"] = tt + 0.1 * a * mpc.dt;
-    msgJson["steering_angle"] = -0.5 * d;
+    msgJson["steering_angle"] = -d;
 
     // Display reference waypoints.
     msgJson["next_x"] = reference[0];

@@ -139,8 +139,8 @@ vector<double> MPC::operator () (double v0, const Waypoints &waypoints, int orde
     vars_lowerbound[i_a] = -1.0;
     vars_upperbound[i_a] = 1.0;
 
-    vars_lowerbound[i_d] = -0.436332;
-    vars_upperbound[i_d] = 0.436332;
+    vars_lowerbound[i_d] = -0.523598;
+    vars_upperbound[i_d] = 0.523598;
   }
 
   // Fit a polynomial to the waypoints.

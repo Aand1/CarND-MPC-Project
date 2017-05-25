@@ -11,7 +11,7 @@ using Eigen::VectorXd;
 typedef vector<vector<double>> Waypoints;
 
 /** @brief Speed contribution factor to the turning rate. */
-const double Lf = 0.05;
+const double Lf = 0.1;
 
 /**
  * @brief Convert waypoints from global coordinate system to the given (local) system.
