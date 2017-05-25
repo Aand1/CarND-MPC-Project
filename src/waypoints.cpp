@@ -28,10 +28,10 @@ Waypoints local(double px, double py, double ph, const Waypoints &global) {
   return {lx, ly};
 }
 
-Waypoints perform(double dt, double v0, double d0, const vector<double> &actuations) {
-  double x = 0; //v0 * dt;
+Waypoints perform(double dt, double v0, const vector<double> &actuations) {
+  double x = 0;
   double y = 0;
-  double h = 0; //v0 * Lf * d0 * dt;
+  double h = 0;
   double v = v0;
 
   Waypoints waypoints(2);

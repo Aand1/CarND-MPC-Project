@@ -14,7 +14,7 @@ struct MPC {
   double vr;
 
   /**
-   * @brief Create a new MPC controller over the given time window and step size.
+   * @brief Create a new MPC controller over the given time window, step size and reference speed.
    */
   MPC(int breadth, double dt, double vr);
 
@@ -26,7 +26,7 @@ struct MPC {
   /**
    * @brief Compute a sequence of actuations to approach the given waypoints.
    */
-  vector<double> operator () (double v0, double d0, const Waypoints &waypoints, int order = 2) const;
+  vector<double> operator () (double v0, const Waypoints &waypoints, int order = 2) const;
 };
 
 #endif /* MPC_H */

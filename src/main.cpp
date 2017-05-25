@@ -30,91 +30,91 @@ string hasData(const string &s) {
 }
 
 int main() {
-  uWS::Hub h;
-
+  // MPC parameters.
   int breadth = 10;
   double dt = 0.1;
   double vr = 20.0;
 
-  // MPC is initialized here!
+  // Initialize MPC to given parameters.
   MPC mpc(breadth, dt, vr);
 
-  double d = 0;
+  uWS::Hub h;
+  h.onMessage([&mpc](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, uWS::OpCode opCode) {
+    // Receive status message from simulator
+    // and log it to standard output.
+    string sdata = string(data).substr(0, length);
+    std::cout << sdata << std::endl;
 
-  h.onMessage([&mpc, &d](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
-                     uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
     // The 2 signifies a websocket event
-    string sdata = string(data).substr(0, length);
-    cout << sdata << endl;
-    if (sdata.size() > 2 && sdata[0] == '4' && sdata[1] == '2') {
-      string s = hasData(sdata);
-      if (s != "") {
-        auto j = json::parse(s);
-        string event = j[0].get<string>();
-        if (event == "telemetry") {
-          // j[1] is the data JSON object
-          vector<double> ptsx = j[1]["ptsx"];
-          vector<double> ptsy = j[1]["ptsy"];
-          double px = j[1]["x"];
-          double py = j[1]["y"];
-          double psi = j[1]["psi"];
-          double v0 = j[1]["speed"];
-
-          Waypoints reference = local(px, py, psi, {ptsx, ptsy});
-          auto actuations = mpc(v0, d, reference);
-          auto a = actuations[2];
-          d = actuations[3];
-
-          double throttle_value = ((double) j[1]["throttle"]) + 0.1 * a * mpc.dt;
-          double steer_value = -0.5 * d;
-
-          json msgJson;
-          msgJson["steering_angle"] = steer_value;
-          msgJson["throttle"] = throttle_value;
-
-          // Display reference waypoints.
-          msgJson["next_x"] = reference[0];
-          msgJson["next_y"] = reference[1];
-
-          // Display planned waypoints.
-          Waypoints planned = perform(mpc.dt, v0, d, actuations);
-          msgJson["mpc_x"] = planned[0];
-          msgJson["mpc_y"] = planned[1];
-
-          auto msg = "42[\"steer\"," + msgJson.dump() + "]";
-          std::cout << msg << std::endl;
-          // Latency
-          // The purpose is to mimic real driving conditions where
-          // the car does actuate the commands instantly.
-          //
-          // Feel free to play around with this value but should be to drive
-          // around the track with 100ms latency.
-          //
-          // NOTE: REMEMBER TO SET THIS TO 100 MILLISECONDS BEFORE
-          // SUBMITTING.
-          auto latency = chrono::milliseconds((int) (mpc.dt * 1000));
-          this_thread::sleep_for(latency);
-          ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
-        }
-      } else {
-        // Manual driving
-        std::string msg = "42[\"manual\",{}]";
-        ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
-      }
+    if (!(sdata.size() > 2 && sdata[0] == '4' && sdata[1] == '2')) {
+      return;
     }
+
+    string s = hasData(sdata);
+    if (s == "") {
+      return;
+    }
+
+    auto j = json::parse(s);
+    string event = j[0].get<string>();
+    if (event != "telemetry") {
+      return;
+    }
+
+    // Current car state.
+    double xt = j[1]["x"];
+    double yt = j[1]["y"];
+    double ht = j[1]["psi"];
+    double vt = j[1]["speed"];
+
+    // Current reference route.
+    vector<double> ptsx = j[1]["ptsx"];
+    vector<double> ptsy = j[1]["ptsy"];
+    Waypoints reference = local(xt, yt, ht, {ptsx, ptsy});
+
+    // Compute sequence of actuations to make car approach reference route,
+    // then take just one pair and discard the rest.
+    auto actuations = mpc(vt, reference);
+    auto a = actuations[2]; // Get the second actuation command pair
+    auto d = actuations[3]; // to account for the system's latency.
+
+    // Compute throttle and steering angle values.
+    json msgJson;
+    double tt = j[1]["throttle"];
+    msgJson["throttle"] = tt + 0.1 * a * mpc.dt;
+    msgJson["steering_angle"] = -0.5 * d;
+
+    // Display reference waypoints.
+    msgJson["next_x"] = reference[0];
+    msgJson["next_y"] = reference[1];
+
+    // Display planned waypoints.
+    Waypoints planned = perform(mpc.dt, vt, actuations);
+    msgJson["mpc_x"] = planned[0];
+    msgJson["mpc_y"] = planned[1];
+
+    // Finish building steering message
+    // and log it to standard output.
+    auto msg = "42[\"steer\"," + msgJson.dump() + "]";
+    std::cout << msg << std::endl;
+
+    // Simulate system latency and send message.
+    auto latency = chrono::milliseconds((int) (mpc.dt * 1000));
+    this_thread::sleep_for(latency);
+    ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
   });
 
   // We don't need this since we're not using HTTP but if it's removed the
   // program
   // doesn't compile :-(
-  h.onHttpRequest([](uWS::HttpResponse *res, uWS::HttpRequest req, char *data,
-                     size_t, size_t) {
+  h.onHttpRequest([](uWS::HttpResponse *res, uWS::HttpRequest req, char *data, size_t, size_t) {
     const std::string s = "<h1>Hello world!</h1>";
     if (req.getUrl().valueLength == 1) {
       res->end(s.data(), s.length());
-    } else {
+    }
+    else {
       // i guess this should be done more gracefully?
       res->end(nullptr, 0);
     }
@@ -124,8 +124,7 @@ int main() {
     std::cout << "Connected!!!" << std::endl;
   });
 
-  h.onDisconnection([&h](uWS::WebSocket<uWS::SERVER> ws, int code,
-                         char *message, size_t length) {
+  h.onDisconnection([&h](uWS::WebSocket<uWS::SERVER> ws, int code, char *message, size_t length) {
     ws.close();
     std::cout << "Disconnected" << std::endl;
   });
@@ -133,9 +132,11 @@ int main() {
   int port = 4567;
   if (h.listen(port)) {
     std::cout << "Listening to port " << port << std::endl;
-  } else {
+  }
+  else {
     std::cerr << "Failed to listen to port" << std::endl;
     return -1;
   }
+
   h.run();
 }

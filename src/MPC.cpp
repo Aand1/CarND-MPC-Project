@@ -30,29 +30,30 @@ struct Cost {
   /** @brief Reference speed. */
   Scalar vr;
 
-  /** @brief Initial turning rate. */
-  Scalar d0;
-
   /** @brief Coefficients of the polynomial describing the reference route. */
   VectorXd route;
 
   /**
    * @brief Create a new optimization task with given initial speed and reference route.
    */
-  Cost(int breadth, double dt, double v0, double vr, double d0, const VectorXd &route) {
-    this->breadth = breadth;
-    this->dt = dt;
+  Cost(double v0, const MPC &mpc, const VectorXd &route) {
+    this->breadth = mpc.breadth;
+    this->dt = mpc.dt;
     this->v0 = v0;
-    this->vr = vr;
-    this->d0 = d0;
+    this->vr = mpc.vr;
     this->route = route;
   }
 
+  /**
+   * @brief Compute the cost function for the MPC.
+   */
   void operator () (ADvector &fg, const ADvector &vars) {
+    // Route is given relative to the car's current pose, so
+    // planning always start from the origin at (0, 0, 0).
+    Scalar xt = 0;
+    Scalar yt = 0;
+    Scalar ht = 0;
     Scalar vt = v0;
-    Scalar ht = 0; //vt * Lf * d0 * dt;
-    Scalar xt = 0; //CppAD::cos(ht) * vt * dt;
-    Scalar yt = 0; //CppAD::sin(ht) * vt * dt;
 
     for (int i = 0; i < breadth; ++i) {
       // Compute the controller-proposed state at time (i * dt).
@@ -86,11 +87,14 @@ struct Cost {
       auto &d2 = vars[D + SIZEOF_ACTUATION * i];
 
       fg[0] += CppAD::pow(a1 - a2, 2);
-      fg[0] += 10 * CppAD::pow(d1 - d2, 2);
+      fg[0] += 10 * CppAD::pow(d1 - d2, 2); // Be more strict about direction changes.
     }
   }
 
 private:
+  /**
+   * @brief Compute the `y` coordinate for the reference route.
+   */
   Scalar reference(const Scalar &x) const {
     Scalar y = route(0);
     for (int i = 1, n = route.rows(); i < n; ++i) {
@@ -101,9 +105,6 @@ private:
   }
 };
 
-//
-// MPC class definition implementation.
-//
 MPC::MPC(int breadth, double dt, double vr) {
     this->breadth = breadth;
     this->dt = dt;
@@ -114,7 +115,7 @@ MPC::~MPC() {
   // Nothing to do.
 }
 
-vector<double> MPC::operator () (double v0, double d0, const Waypoints &waypoints, int order) const {
+vector<double> MPC::operator () (double v0, const Waypoints &waypoints, int order) const {
   // Differentiable value vector type.
   typedef CPPAD_TESTVECTOR(double) Vector;
 
@@ -146,13 +147,13 @@ vector<double> MPC::operator () (double v0, double d0, const Waypoints &waypoint
   VectorXd route = polyfit(waypoints, order);
 
   // Define the cost function.
-  Cost cost(breadth, dt, v0, vr, d0, route);
+  Cost cost(v0, *this, route);
 
   // Options for IPOPT solver.
   std::string options =
-    "Integer print_level  0\n"
-    "Sparse  true forward\n"
-    "Sparse  true reverse\n"
+    "Integer print_level 0\n"
+    "Sparse true forward\n"
+    "Sparse true reverse\n"
     "Numeric max_cpu_time 0.5\n";
 
   // Solution to the cost optimization problem.
