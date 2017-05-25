@@ -1,3 +1,5 @@
+#define HAVE_CSTDDEF
+
 #include "MPC.h"
 #include <cppad/cppad.hpp>
 #include <cppad/ipopt/solve.hpp>
@@ -5,117 +7,179 @@
 
 using CppAD::AD;
 
-// TODO: Set the timestep length and duration
-size_t N = 0;
-double dt = 0;
+static const int A = 0;
+static const int D = 1;
+static const int SIZEOF_ACTUATION = 2;
 
-// This value assumes the model presented in the classroom is used.
-//
-// It was obtained by measuring the radius formed by running the vehicle in the
-// simulator around in a circle with a constant steering angle and velocity on a
-// flat terrain.
-//
-// Lf was tuned until the the radius formed by the simulating the model
-// presented in the classroom matched the previous radius.
-//
-// This is the length from front to CoG that has a similar radius.
-const double Lf = 2.67;
+struct Cost {
+  /** @brief Basic scalar value. */
+  typedef AD<double> Scalar;
 
-class FG_eval {
- public:
-  // Fitted polynomial coefficients
-  Eigen::VectorXd coeffs;
-  FG_eval(Eigen::VectorXd coeffs) { this->coeffs = coeffs; }
+  /** @brief Differentiable variable vector type. */
+  typedef CPPAD_TESTVECTOR(Scalar) ADvector;
 
-  typedef CPPAD_TESTVECTOR(AD<double>) ADvector;
-  void operator()(ADvector& fg, const ADvector& vars) {
-    // TODO: implement MPC
-    // fg a vector of constraints, x is a vector of constraints.
-    // NOTE: You'll probably go back and forth between this function and
-    // the Solver function below.
+  /** @brief Breadth of the time window, in time steps. */
+  int breadth;
+
+  /** @brief Size of the time step. */
+  Scalar dt;
+
+  /** @brief Initial speed at the beginning of the time window. */
+  Scalar v0;
+
+  /** @brief Reference speed. */
+  Scalar vr;
+
+  /** @brief Initial turning rate. */
+  Scalar d0;
+
+  /** @brief Coefficients of the polynomial describing the reference route. */
+  VectorXd route;
+
+  /**
+   * @brief Create a new optimization task with given initial speed and reference route.
+   */
+  Cost(int breadth, double dt, double v0, double vr, double d0, const VectorXd &route) {
+    this->breadth = breadth;
+    this->dt = dt;
+    this->v0 = v0;
+    this->vr = vr;
+    this->d0 = d0;
+    this->route = route;
+  }
+
+  void operator () (ADvector &fg, const ADvector &vars) {
+    Scalar vt = v0;
+    Scalar ht = 0; //vt * Lf * d0 * dt;
+    Scalar xt = 0; //CppAD::cos(ht) * vt * dt;
+    Scalar yt = 0; //CppAD::sin(ht) * vt * dt;
+
+    for (int i = 0; i < breadth; ++i) {
+      // Compute the controller-proposed state at time (i * dt).
+      auto &a = vars[A + SIZEOF_ACTUATION * i];
+      auto &d = vars[D + SIZEOF_ACTUATION * i];
+      ht += vt * Lf * d * dt;
+      vt += a * dt;
+      xt += CppAD::cos(ht) * vt * dt;
+      yt += CppAD::sin(ht) * vt * dt;
+
+      // Compute the reference state at time (i * dt).
+      auto yr = reference(xt);
+      auto hr = CppAD::atan2(yr, xt);
+
+      // Compute the contribution at time i * dt to the cost function.
+      fg[0] += CppAD::pow(yt - yr, 2);
+      fg[0] += CppAD::pow(ht - hr, 2);
+      fg[0] += CppAD::pow(vt - vr, 2);
+
+      // Minimize actuator use.
+      fg[0] += CppAD::pow(a, 2);
+      fg[0] += CppAD::pow(d, 2);
+    }
+
+    // Minimize the value gap between sequential actuations.
+    for (int i = 1; i < breadth; ++i) {
+      auto &a1 = vars[A + SIZEOF_ACTUATION * (i - 1)];
+      auto &d1 = vars[D + SIZEOF_ACTUATION * (i - 1)];
+
+      auto &a2 = vars[A + SIZEOF_ACTUATION * i];
+      auto &d2 = vars[D + SIZEOF_ACTUATION * i];
+
+      fg[0] += CppAD::pow(a1 - a2, 2);
+      fg[0] += 10 * CppAD::pow(d1 - d2, 2);
+    }
+  }
+
+private:
+  Scalar reference(const Scalar &x) const {
+    Scalar y = route(0);
+    for (int i = 1, n = route.rows(); i < n; ++i) {
+      y += route(i) * CppAD::pow(x, i);
+    }
+
+    return y;
   }
 };
 
 //
 // MPC class definition implementation.
 //
-MPC::MPC() {}
-MPC::~MPC() {}
+MPC::MPC(int breadth, double dt, double vr) {
+    this->breadth = breadth;
+    this->dt = dt;
+    this->vr = vr;
+}
 
-vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
-  bool ok = true;
-  size_t i;
-  typedef CPPAD_TESTVECTOR(double) Dvector;
+MPC::~MPC() {
+  // Nothing to do.
+}
 
-  // TODO: Set the number of model variables (includes both states and inputs).
-  // For example: If the state is a 4 element vector, the actuators is a 2
-  // element vector and there are 10 timesteps. The number of variables is:
-  //
-  // 4 * 10 + 2 * 9
-  size_t n_vars = 0;
-  // TODO: Set the number of constraints
-  size_t n_constraints = 0;
+vector<double> MPC::operator () (double v0, double d0, const Waypoints &waypoints, int order) const {
+  // Differentiable value vector type.
+  typedef CPPAD_TESTVECTOR(double) Vector;
 
-  // Initial value of the independent variables.
-  // SHOULD BE 0 besides initial state.
-  Dvector vars(n_vars);
-  for (int i = 0; i < n_vars; i++) {
-    vars[i] = 0;
+  // Independent variables and bounds.
+  Vector vars(breadth * SIZEOF_ACTUATION);
+  Vector vars_lowerbound(breadth * SIZEOF_ACTUATION);
+  Vector vars_upperbound(breadth * SIZEOF_ACTUATION);
+
+  // Constraint bounds, set to size 0 as the cost function includes no constraints.
+  Vector constraints_lowerbound(0);
+  Vector constraints_upperbound(0);
+
+  // Initialize independent variable and bounds vectors.
+  for (int i = 0; i < breadth; i++) {
+    int i_a = A + i * SIZEOF_ACTUATION;
+    int i_d = D + i * SIZEOF_ACTUATION;
+
+    vars[i_a] = 0;
+    vars[i_d] = 0;
+
+    vars_lowerbound[i_a] = -1.0;
+    vars_upperbound[i_a] = 1.0;
+
+    vars_lowerbound[i_d] = -0.436332;
+    vars_upperbound[i_d] = 0.436332;
   }
 
-  Dvector vars_lowerbound(n_vars);
-  Dvector vars_upperbound(n_vars);
-  // TODO: Set lower and upper limits for variables.
+  // Fit a polynomial to the waypoints.
+  VectorXd route = polyfit(waypoints, order);
 
-  // Lower and upper limits for the constraints
-  // Should be 0 besides initial state.
-  Dvector constraints_lowerbound(n_constraints);
-  Dvector constraints_upperbound(n_constraints);
-  for (int i = 0; i < n_constraints; i++) {
-    constraints_lowerbound[i] = 0;
-    constraints_upperbound[i] = 0;
+  // Define the cost function.
+  Cost cost(breadth, dt, v0, vr, d0, route);
+
+  // Options for IPOPT solver.
+  std::string options =
+    "Integer print_level  0\n"
+    "Sparse  true forward\n"
+    "Sparse  true reverse\n"
+    "Numeric max_cpu_time 0.5\n";
+
+  // Solution to the cost optimization problem.
+  CppAD::ipopt::solve_result<Vector> solution;
+
+  // Call the solver on the cost function and given parameters.
+  CppAD::ipopt::solve<Vector, Cost>(
+    options,
+    vars,
+    vars_lowerbound,
+    vars_upperbound,
+    constraints_lowerbound,
+    constraints_upperbound,
+    cost,
+    solution
+  );
+
+  // Report solution results.
+  auto value = solution.obj_value;
+  auto status = (solution.status == CppAD::ipopt::solve_result<Vector>::success ? "succeeded" : "failed");
+  std::cout << "Solver " << status << ", final cost value = " << value << std::endl;
+
+  vector<double> actuations;
+  auto &x = solution.x;
+  for (int i = 0, n = breadth * SIZEOF_ACTUATION; i < n; ++i) {
+    actuations.push_back(x[i]);
   }
 
-  // object that computes objective and constraints
-  FG_eval fg_eval(coeffs);
-
-  //
-  // NOTE: You don't have to worry about these options
-  //
-  // options for IPOPT solver
-  std::string options;
-  // Uncomment this if you'd like more print information
-  options += "Integer print_level  0\n";
-  // NOTE: Setting sparse to true allows the solver to take advantage
-  // of sparse routines, this makes the computation MUCH FASTER. If you
-  // can uncomment 1 of these and see if it makes a difference or not but
-  // if you uncomment both the computation time should go up in orders of
-  // magnitude.
-  options += "Sparse  true        forward\n";
-  options += "Sparse  true        reverse\n";
-  // NOTE: Currently the solver has a maximum time limit of 0.5 seconds.
-  // Change this as you see fit.
-  options += "Numeric max_cpu_time          0.5\n";
-
-  // place to return solution
-  CppAD::ipopt::solve_result<Dvector> solution;
-
-  // solve the problem
-  CppAD::ipopt::solve<Dvector, FG_eval>(
-      options, vars, vars_lowerbound, vars_upperbound, constraints_lowerbound,
-      constraints_upperbound, fg_eval, solution);
-
-  // Check some of the solution values
-  ok &= solution.status == CppAD::ipopt::solve_result<Dvector>::success;
-
-  // Cost
-  auto cost = solution.obj_value;
-  std::cout << "Cost " << cost << std::endl;
-
-  // TODO: Return the first actuator values. The variables can be accessed with
-  // `solution.x[i]`.
-  //
-  // {...} is shorthand for creating a vector, so auto x1 = {1.0,2.0}
-  // creates a 2 element double vector.
-  return {};
+  return actuations;
 }
